@@ -1,0 +1,143 @@
+import asynchat
+import asyncore
+
+# define port
+PORT = 6666
+
+# defin endsession class 
+class EndSession(Exception):
+	pass
+
+
+class ChatServer(asyncore.dispatcher):
+	"""
+	ChatServer
+	"""
+
+
+	def __init__(self, port):
+		asyncore.dispatcher.__init__(self)
+		# create a socket
+		self.create_socket()
+		# setting socket as reusable
+		self.set_reuse_addr()
+		# listen port
+		self.bind(('', port))
+		self.listen(5)
+		self.users = {}
+		self.main_room = ChatRoom(self)
+
+
+	def handle_accept(self):
+		conn, addr = self.accept()
+		ChatSession(self, conn)
+
+
+class ChatSession(asynchat.async_chat):
+	"""
+	Responsible for communication with the client
+	"""
+
+	def __init__(self, server, sock):
+		asynchat.async_chat.__init__(self,sock)
+		self.server = server
+		self.set_terminator(b'\n')
+		self.data = []
+		self.name = None
+		self.enter(LoginRoom(server))
+
+	def enter(self, room):
+		# Remove yourself from the current room and add it to the designated room
+		try:
+			cur = self.room
+		except AttributeError:
+			pass
+		else:
+			cur.remove(self)
+		self.room = room
+		room.add(self)
+		
+	def collect_incoming_data(self, data):
+		# Receiving data from the client
+		self.data.append(data.decode("utf-8"))
+
+	def found_terminator(self):
+		# Processing at the end of a client's data
+		line = ''.join(self.data)
+		self.data = []
+		try:
+			self.room.handle(self, line.encode("utf-8"))
+		# Exit chatroom
+		except EndSession:
+			self.handle_close()
+
+	def handle_close(self):
+		# Incoming logoutroom when session close
+		asynchat.async_chat.handle_close(self)
+		self.enter(LogoutRoom(self.server))
+
+
+class CommandHandler:
+	"""
+	CommandHandler
+	"""
+
+	def unknown(self, session, cmd):
+		# Response unkown command
+		# send message with aynchat.async_chat.push
+		session.push(('Unkown command {} \n'.format(cmd)).encode("utf-8"))
+		
+	def handle(self, session, line):
+		line = line.decode()
+		# Command processing
+		if not line.strip():
+			return
+		parts = line.split(' ', 1)
+		cmd = parts[0]
+		try:
+			line = parts[1].strip()
+		except IndexError:
+			line = ''
+		# Executing the corresponding method through the protocal code
+		method = getattr(self, 'do_' + cmd, None)
+		try:
+		 	method(session, line)
+		 except TypeError:
+		 	self.unkown(session, cmd) 
+
+class Room(CommandHandler):
+	"""
+	The environment with multiple users is responsible for basic command processing and broadcasting.
+	"""
+	def __init__(self, server):
+		self.server = server
+		self.sessions = []
+
+	def add(self, session):
+		# A user enters the room
+		self.sessions.append(session)
+
+	def remove(self, session):
+		# A user leaves the room
+		self.sessions.remove(session)
+
+	def broadcast(self, line):
+		# Send the specified message to all users
+		# Sending data using asynchat.async_chat.push method
+		for session in self.sessions:
+			session.push(line)
+
+	def do_logout(self, session, line):
+		# Exit the room
+		raise EndSession
+
+class LoginRoom(Room):
+	"""
+	Processing logon users
+	"""
+	def add(self, session):
+		# Response to the success of a user connection
+		Room.add(self, session)
+		# Sending data using asynchat.async_chat.push method
+		session.push(b'Connect Success')
+		
